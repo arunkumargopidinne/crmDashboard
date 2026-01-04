@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/app/lib/db";
 import { requireAuth } from "@/app/lib/requireAuth";
 import { Tag } from "@/app/models/Tag";
+import { User } from "@/app/models/User";
 
 /**
  * GET /api/tags
@@ -13,7 +14,18 @@ export async function GET(req: NextRequest) {
 
     const decoded = await requireAuth(req);
 
-    const tags = await Tag.find({ createdBy: decoded.uid })
+    // Map Firebase decoded token to MongoDB user _id
+    const mongoUser =
+      (await User.findOne({ firebaseUid: decoded.uid })) ||
+      (decoded.email ? await User.findOne({ email: decoded.email }) : null);
+
+    if (!mongoUser) {
+      throw new Error("User not found in database");
+    }
+
+    const userId = mongoUser._id.toString();
+
+    const tags = await Tag.find({ createdBy: userId })
       .sort({ createdAt: -1 })
       .lean();
 
@@ -33,6 +45,17 @@ export async function POST(req: NextRequest) {
     await connectDB();
 
     const decoded = await requireAuth(req);
+
+    // Map Firebase decoded token to MongoDB user _id
+    const mongoUser =
+      (await User.findOne({ firebaseUid: decoded.uid })) ||
+      (decoded.email ? await User.findOne({ email: decoded.email }) : null);
+
+    if (!mongoUser) {
+      throw new Error("User not found in database");
+    }
+
+    const userId = mongoUser._id.toString();
     const { name, color } = await req.json();
 
     if (!name || !name.trim()) {
@@ -45,7 +68,7 @@ export async function POST(req: NextRequest) {
     // Check for duplicate tag name
     const existing = await Tag.findOne({
       name: name.trim(),
-      createdBy: decoded.uid,
+      createdBy: userId,
     });
 
     if (existing) {
@@ -58,7 +81,7 @@ export async function POST(req: NextRequest) {
     const tag = new Tag({
       name: name.trim(),
       color: color || "#3B82F6",
-      createdBy: decoded.uid,
+      createdBy: userId,
     });
 
     await tag.save();

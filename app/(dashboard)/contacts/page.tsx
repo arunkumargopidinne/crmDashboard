@@ -130,7 +130,7 @@ export default function ContactsPage() {
 
       {/* Action Bar */}
       <Card className="p-4">
-        <div className="flex flex-col md:flex-row gap-4 items-md:center justify-between">
+        <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
           {/* Search */}
           <div className="flex-1">
             <div className="relative">

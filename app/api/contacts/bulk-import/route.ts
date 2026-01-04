@@ -3,6 +3,7 @@ import { connectDB } from "@/app/lib/db";
 import { requireAuth } from "@/app/lib/requireAuth";
 import { contactService } from "@/app/services/ContactService";
 import { Contact } from "@/app/models/Contact";
+import { User } from "@/app/models/User";
 
 /**
  * POST /api/contacts/bulk-import
@@ -14,6 +15,17 @@ export async function POST(req: NextRequest) {
     await connectDB();
 
     const decoded = await requireAuth(req);
+
+    // Map Firebase decoded token to MongoDB user _id
+    const mongoUser =
+      (await User.findOne({ firebaseUid: decoded.uid })) ||
+      (decoded.email ? await User.findOne({ email: decoded.email }) : null);
+
+    if (!mongoUser) {
+      throw new Error("User not found in database");
+    }
+
+    const userId = mongoUser._id.toString();
     const { contacts } = await req.json();
 
     if (!Array.isArray(contacts)) {
@@ -39,7 +51,7 @@ export async function POST(req: NextRequest) {
 
     const result = await contactService.bulkImportContacts(
       contacts,
-      decoded.uid
+      userId
     );
 
     const status =

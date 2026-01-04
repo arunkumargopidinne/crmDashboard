@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/app/lib/db";
 import { requireAuth } from "@/app/lib/requireAuth";
 import { contactService } from "@/app/services/ContactService";
+import { User } from "@/app/models/User";
 
 /**
  * GET /api/contacts
@@ -13,6 +14,18 @@ export async function GET(req: NextRequest) {
     await connectDB();
 
     const decoded = await requireAuth(req);
+
+    // Map Firebase decoded token to MongoDB user _id
+    const mongoUser =
+      (await User.findOne({ firebaseUid: decoded.uid })) ||
+      (decoded.email ? await User.findOne({ email: decoded.email }) : null);
+
+    if (!mongoUser) {
+      throw new Error("User not found in database");
+    }
+
+    const userId = mongoUser._id.toString();
+
     const { searchParams } = new URL(req.url);
 
     const page = parseInt(searchParams.get("page") || "1", 10);
@@ -21,7 +34,7 @@ export async function GET(req: NextRequest) {
     const tagsParam = searchParams.get("tags") || "";
     const tags = tagsParam ? tagsParam.split(",") : [];
 
-    const result = await contactService.getContacts(decoded.uid, {
+    const result = await contactService.getContacts(userId, {
       page,
       limit,
       search,
@@ -44,11 +57,23 @@ export async function POST(req: NextRequest) {
     await connectDB();
 
     const decoded = await requireAuth(req);
+
+    // Map Firebase decoded token to MongoDB user _id
+    const mongoUser =
+      (await User.findOne({ firebaseUid: decoded.uid })) ||
+      (decoded.email ? await User.findOne({ email: decoded.email }) : null);
+
+    if (!mongoUser) {
+      throw new Error("User not found in database");
+    }
+
+    const userId = mongoUser._id.toString();
+
     const body = await req.json();
 
     const contact = await contactService.createContact({
       ...body,
-      createdBy: decoded.uid,
+      createdBy: userId,
     });
 
     return NextResponse.json(contact, { status: 201 });

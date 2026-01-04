@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Contact, IContactFormData } from "@/types/contact";
+import { apiFetch } from "@/app/lib/api";
 
 const API_BASE = "/api/contacts";
 
@@ -25,9 +26,7 @@ export function useContacts(
       if (search) params.append("search", search);
       if (tags.length > 0) params.append("tags", tags.join(","));
 
-      const response = await fetch(`${API_BASE}?${params.toString()}`);
-      if (!response.ok) throw new Error("Failed to fetch contacts");
-      return response.json();
+      return apiFetch(`${API_BASE}?${params.toString()}`);
     },
     keepPreviousData: true,
   });
@@ -40,9 +39,7 @@ export function useContact(id: string | null) {
   return useQuery({
     queryKey: ["contact", id],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE}/${id}`);
-      if (!response.ok) throw new Error("Failed to fetch contact");
-      return response.json();
+      return apiFetch(`${API_BASE}/${id}`);
     },
     enabled: !!id,
   });
@@ -55,9 +52,7 @@ export function useDashboardStats() {
   return useQuery({
     queryKey: ["dashboard-stats"],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE}/stats`);
-      if (!response.ok) throw new Error("Failed to fetch stats");
-      return response.json();
+      return apiFetch(`${API_BASE}/stats`);
     },
   });
 }
@@ -72,18 +67,7 @@ export function useCreateContact() {
 
   return useMutation({
     mutationFn: async (data: IContactFormData) => {
-      const response = await fetch(API_BASE, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to create contact");
-      }
-
-      return response.json();
+      return apiFetch(API_BASE, { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       // Invalidate contacts list and stats
@@ -100,25 +84,8 @@ export function useUpdateContact() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({
-      id,
-      data,
-    }: {
-      id: string;
-      data: Partial<IContactFormData>;
-    }) => {
-      const response = await fetch(`${API_BASE}/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to update contact");
-      }
-
-      return response.json();
+    mutationFn: async ({ id, data }: { id: string; data: Partial<IContactFormData> }) => {
+      return apiFetch(`${API_BASE}/${id}`, { method: "PUT", body: JSON.stringify(data) });
     },
     onSuccess: (_, { id }) => {
       // Invalidate specific contact and list
@@ -136,16 +103,7 @@ export function useDeleteContact() {
 
   return useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(`${API_BASE}/${id}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to delete contact");
-      }
-
-      return response.json();
+      return apiFetch(`${API_BASE}/${id}`, { method: "DELETE" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["contacts"] });
@@ -162,18 +120,7 @@ export function useBulkDeleteContacts() {
 
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      const response = await fetch(`${API_BASE}/bulk-delete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to delete contacts");
-      }
-
-      return response.json();
+      return apiFetch(`${API_BASE}/bulk-delete`, { method: "POST", body: JSON.stringify({ ids }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["contacts"] });
@@ -199,18 +146,11 @@ export function useBulkImportContacts() {
         notes?: string;
       }>
     ) => {
-      const response = await fetch(`${API_BASE}/bulk-import`, {
+      return apiFetch(`${API_BASE}/bulk-import`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contacts }),
+        allowedStatuses: [207],
       });
-
-      if (!response.ok && response.status !== 207) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to import contacts");
-      }
-
-      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["contacts"] });

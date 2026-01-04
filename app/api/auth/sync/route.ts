@@ -4,6 +4,15 @@ import { connectDB } from "../../../lib/db";
 import { requireAuth } from "../../../lib/requireAuth";
 import { User } from "../../../models/User";
 
+/**
+ * Sync Firebase-authenticated user into MongoDB `users` collection.
+ *
+ * Strategy:
+ * - Prefer email-based lookup to avoid creating duplicate null `firebaseUid` documents
+ * - Only set `firebaseUid` when a valid `uid` exists
+ * - Avoid performing index DDL here; migration endpoint exists to fix indexes
+ * - If a create fails due to duplicate-null `firebaseUid`, merge into an existing null-uid document
+ */
 export async function POST(req: NextRequest) {
   try {
     await connectDB();
@@ -15,109 +24,81 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ message: "Email missing in token" }, { status: 400 });
     }
 
-    // Determine auth provider from sign_in_provider in token
     const provider = firebase?.sign_in_provider === "google.com" ? "google" : "password";
 
-    // Use rawResult to detect whether document was newly created or updated
-    // If uid is null/undefined, use email as fallback filter to avoid duplicate key errors
-    let result: any = null;
-    const filterQuery = uid && uid !== "undefined" ? { firebaseUid: uid } : { email };
+    // Normalize uid
+    const saneUid = uid && uid !== "undefined" ? String(uid) : null;
 
-    try {
-      result = await User.findOneAndUpdate(
-        filterQuery,
-        {
-          $set: {
-            firebaseUid: uid || undefined, // Only set if not null
-            email,
-            displayName: name || "",
-            photoURL: picture || "",
-            provider,
-          },
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true, rawResult: true }
-      );
-    } catch (err: any) {
-      // If we hit a duplicate key error due to firebaseUid index
-      if (err.code === 11000 && err.keyPattern?.firebaseUid) {
-        console.log("[SYNC] Handling E11000 duplicate key on firebaseUid, dropping and recreating index");
-        
-        // Drop the old index
-        try {
-          await User.collection.dropIndex("firebaseUid_1");
-        } catch (dropErr) {
-          console.log("[SYNC] Index drop result:", dropErr.message);
-        }
+    // First, try to find by email (preferred)
+    let userDoc = await User.findOne({ email }).exec();
 
-        // Remove existing null firebaseUid documents
-        try {
-          const removed = await User.deleteMany({ firebaseUid: null });
-          console.log(`[SYNC] Removed ${removed.deletedCount} documents with null firebaseUid`);
-        } catch (delErr) {
-          console.log("[SYNC] Error removing null documents:", delErr.message);
-        }
+    if (userDoc) {
+      // Update existing user (do not overwrite firebaseUid unless we have a sane uid)
+      const update: any = {
+        email,
+        displayName: name || "",
+        photoURL: picture || "",
+        provider,
+      };
+      if (saneUid) update.firebaseUid = saneUid;
 
-        // Recreate indexes from schema
-        try {
-          await User.syncIndexes();
-          console.log("[SYNC] Indexes recreated with sparse option");
-        } catch (syncErr) {
-          console.log("[SYNC] Error syncing indexes:", syncErr.message);
-        }
+      const updated = await User.findByIdAndUpdate(userDoc._id, update, { new: true }).lean();
+      console.log(`[SYNC] Updated user by email: ${email}${saneUid ? ` (uid ${saneUid})` : ""}`);
+      return NextResponse.json({ message: "User updated", user: updated });
+    }
 
-        // Retry the update
-        result = await User.findOneAndUpdate(
-          filterQuery,
-          {
-            $set: {
-              firebaseUid: uid || undefined,
-              email,
-              displayName: name || "",
-              photoURL: picture || "",
-              provider,
-            },
-          },
-          { upsert: true, new: true, setDefaultsOnInsert: true, rawResult: true }
-        );
-        console.log("[SYNC] Retry successful after index fix");
-      } else {
-        throw err;
+    // No user by email. If we have a uid, try to find by firebaseUid
+    if (saneUid) {
+      userDoc = await User.findOne({ firebaseUid: saneUid }).exec();
+      if (userDoc) {
+        const updated = await User.findByIdAndUpdate(
+          userDoc._id,
+          { email, displayName: name || "", photoURL: picture || "", provider },
+          { new: true }
+        ).lean();
+        console.log(`[SYNC] Updated user by firebaseUid: ${saneUid}`);
+        return NextResponse.json({ message: "User updated", user: updated });
       }
     }
 
-    const user = result.value;
-    const updatedExisting = !!result.lastErrorObject?.updatedExisting;
-    const action = updatedExisting ? "updated" : "created";
-
-    const readyState = mongoose.connection?.readyState;
-    const stateMap: Record<number, string> = {
-      0: "disconnected",
-      1: "connected",
-      2: "connecting",
-      3: "disconnecting",
-    };
-
-    console.log(`[SYNC] User ${uid} ${action}:`, {
+    // No existing user found. Instead of blindly creating (which can fail due to
+    // legacy non-sparse `uid` index with nulls), try to find an existing
+    // placeholder document with null `firebaseUid` or legacy `uid` and merge
+    // into it. Only create when no candidate exists.
+    const toCreate: any = {
       email,
       displayName: name || "",
       photoURL: picture || "",
       provider,
-      dbState: stateMap[readyState] || readyState,
-    });
+    };
+    if (saneUid) toCreate.firebaseUid = saneUid;
 
-    return NextResponse.json({
-      message: `User ${action} in MongoDB`,
-      created: !updatedExisting,
-      user,
-      dbState: stateMap[readyState] || readyState,
-    });
+    // Look for an existing 'placeholder' user created earlier that has
+    // either `firebaseUid: null` or legacy `uid: null` to merge into.
+    const nullCandidate = await User.findOne({
+      $or: [{ firebaseUid: null }, { uid: null }],
+    }).exec();
+
+    if (nullCandidate) {
+      const merged = await User.findByIdAndUpdate(
+        nullCandidate._id,
+        { email, displayName: name || "", photoURL: picture || "", provider, ...(saneUid ? { firebaseUid: saneUid } : {}) },
+        { new: true }
+      ).lean();
+      console.log(`[SYNC] Merged into existing null-uid user: ${merged._id}`);
+      return NextResponse.json({ message: "User merged", user: merged });
+    }
+
+    // No null placeholder found — safe to create
+    const created = await User.create(toCreate);
+    console.log(`[SYNC] Created new user: ${email}${saneUid ? ` (uid ${saneUid})` : ""}`);
+    return NextResponse.json({ message: "User created", user: created }, { status: 201 });
   } catch (err: any) {
     console.error("[SYNC] Error:", err);
     const msg = err?.message || "Unauthorized";
     if (msg.includes("Firebase Admin") || msg.includes("not configured")) {
       return NextResponse.json({ message: msg }, { status: 500 });
     }
-    // If it's a DB connection error, return 500 so it's obvious in client logs
     if (msg.toLowerCase().includes("mongo") || msg.toLowerCase().includes("connection")) {
       return NextResponse.json({ message: msg }, { status: 500 });
     }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/app/lib/db";
 import { requireAuth } from "@/app/lib/requireAuth";
 import { contactService } from "@/app/services/ContactService";
+import { User } from "@/app/models/User";
 
 /**
  * GET /api/contacts/:id
@@ -15,7 +16,19 @@ export async function GET(
     await connectDB();
 
     const decoded = await requireAuth(req);
-    const contact = await contactService.getContactById(params.id, decoded.uid);
+
+    // Map Firebase decoded token to MongoDB user _id
+    const mongoUser =
+      (await User.findOne({ firebaseUid: decoded.uid })) ||
+      (decoded.email ? await User.findOne({ email: decoded.email }) : null);
+
+    if (!mongoUser) {
+      throw new Error("User not found in database");
+    }
+
+    const userId = mongoUser._id.toString();
+
+    const contact = await contactService.getContactById(params.id, userId);
 
     return NextResponse.json(contact);
   } catch (error: any) {
@@ -37,11 +50,22 @@ export async function PUT(
     await connectDB();
 
     const decoded = await requireAuth(req);
+
+    // Map Firebase decoded token to MongoDB user _id
+    const mongoUser =
+      (await User.findOne({ firebaseUid: decoded.uid })) ||
+      (decoded.email ? await User.findOne({ email: decoded.email }) : null);
+
+    if (!mongoUser) {
+      throw new Error("User not found in database");
+    }
+
+    const userId = mongoUser._id.toString();
     const body = await req.json();
 
     const contact = await contactService.updateContact({
       id: params.id,
-      createdBy: decoded.uid,
+      createdBy: userId,
       ...body,
     });
 
@@ -69,7 +93,19 @@ export async function DELETE(
     await connectDB();
 
     const decoded = await requireAuth(req);
-    await contactService.deleteContact(params.id, decoded.uid);
+
+    // Map Firebase decoded token to MongoDB user _id
+    const mongoUser =
+      (await User.findOne({ firebaseUid: decoded.uid })) ||
+      (decoded.email ? await User.findOne({ email: decoded.email }) : null);
+
+    if (!mongoUser) {
+      throw new Error("User not found in database");
+    }
+
+    const userId = mongoUser._id.toString();
+
+    await contactService.deleteContact(params.id, userId);
 
     return NextResponse.json({
       message: "Contact deleted successfully",
