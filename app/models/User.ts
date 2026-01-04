@@ -2,7 +2,12 @@ import mongoose, { Schema, models, model } from "mongoose";
 
 const UserSchema = new Schema(
   {
-    firebaseUid: { type: String, required: true, unique: true, index: true },
+    firebaseUid: {
+      type: String,
+      required: false,
+      sparse: true, // Only enforce uniqueness for non-null values
+      index: true,
+    },
     email: { type: String, required: true, index: true },
     displayName: { type: String, default: "" },
     photoURL: { type: String, default: "" },
